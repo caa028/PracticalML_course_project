@@ -1,0 +1,139 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Anatoly Andrianov"
+date: "7/8/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+library(caret)
+```
+
+## Introduction
+
+One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. This project uses data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. 
+
+## Assignment
+
+The goal of the project is to predict the manner in which participants did the exercise. This is the "classe" variable in the training set. We may use any of the other variables to predict with.
+
+The report describes:
+
+- how we built our model
+- how we used cross validation
+- what the expected out of sample error is
+- why we made the choices
+
+The created prediction model will be used to predict 20 different test cases.
+
+## Data
+
+According to the assignment, the data for this project has been obtained from:
+
+- training data: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+- test data: [https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+The original source of this data is [Human Activity Recognition](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har) project.
+
+### Data acquisition
+
+```{r loading, cache = TRUE}
+# if not already downloaded, download the source data set
+if (!("pml-training.csv") %in% dir()) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",
+                "pml-training.csv")
+}
+if (!("pml-testing.csv") %in% dir()) {
+  download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",
+                "pml-testing.csv")
+}
+# load the "training" data set
+training <- read.table(file = "pml-training.csv", header = TRUE, sep = ",", comment.char = "", quote = "\"", na.strings = c("NA", "#DIV/0!", ""))
+# load the "testing" data set
+testing <- read.table(file = "pml-testing.csv", header = TRUE, sep = ",", comment.char = "", quote = "\"", na.strings = c("NA", "#DIV/0!", ""))
+```
+
+Unfortunately, no documentation for the variables (explanation of the column nanes) is available (besides **classe** being declared as the detected activity type).
+
+After taking a quick look at the acquired data and in absence of any documentation describing the nature of the variables, I've made a decision to exclude the first 7 columns from the training data set.
+
+My assumption is that the variable *X* represents the row number, variable *user_name* represents test subject's name, multiple columns with "*timestamp*" and "*window*" in their names represent various time sequence parameters (irrelevant since we are not forecasting in time domain).
+
+```{r cleanup, cache = TRUE}
+# make classe a factor
+training$classe <- as.factor(training$classe)
+# remove irrelevant variables
+training <- training[,-(1:7)]
+# coerce all predictors into numeric type (fix CSV reading issues)
+training[, 1:152] <- sapply(training[, 1:152], as.numeric)
+# make problem_id a factor
+testing$problem_id <- as.factor(testing$problem_id)
+# coerce all predictors into numeric type (fix CSV reading issues)
+testing[, 8:159] <- sapply(testing[, 8:159], as.numeric)
+```
+
+After taking a closer look at the training data set, I've noticed that several variables had very high numbers of NAs as if the data samples have been deliberately removed - typically, if the NAs were present in a variable, only 2% of values were available.
+
+```{r missing}
+# evaluate the amount of missing data
+missingData <- data.frame(apply(is.na(training), 2, mean))
+# identify the "bad" variables
+badVars <- sum(missingData > 0)
+# and remove them from the data set
+trainingClean <- training[,missingData == 0]
+```
+
+The total count of "bad" variables was `r badVars`. The resulting "clean" training data set has the following dimensions:
+```{r clean}
+# demonstrate cleaned data set dimensions
+dim(trainingClean)
+```
+
+## Model and Cross validation
+
+For the model fitting we use K-fold cross validation functionality built into the *caret* package. We run it 3 times on 10-fold data. For the model training we will use 60% of the initial data set, while the remaining 40% will be used for the model validation.
+
+```{r partition}
+# create actual training and validation data sets
+inTraining <- createDataPartition(trainingClean$classe, p = 0.6, list = FALSE)
+trainingData <- trainingClean[inTraining,]
+validationData <- trainingClean[-inTraining,]
+```
+
+We fit the Random Forests model and tests its accuracy on the validation data set created in the previous step.
+
+```{r model}
+# create train control object
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 3)
+# fit the model
+fit <- train(classe ~ .,
+             data = trainingClean,
+             method="rf",
+             ntree = 10,
+             trControl = fitControl)
+# test model accuracy on the validation data set
+confusionMatrix(fit, newdata = predict(fit, validationData))
+```
+
+## Expected out of sample error
+
+According to the results of model testing on a validation data set (none of which has been used for the model fitting), we may expect similar level of accuracy of about 99%.
+
+However, because we eliminated large number of "bad" variables from our training set, and these variables may influence the prediction outcome for "real" validation data, actual out of sample error may be higher.
+
+## Choices
+
+A brief summary of choices made throughout this project:
+
+- irrelevant (time domain) variables have been eliminated from the data set. *Reason* - we are not tasked with forecasting
+- "bad" variables (those with ~98% of missing values) have been eliminated from the data set. *Reason* - reduce the data set and focus on those variables that can be used for prediction.
+- sliced the original "training" data set into 60% used for training and 40% for validation. *Reason* - use an opportunity to evaluate out of sample error
+- used Random Forests model that ran 3 times on 10-folds data. *Reason* - we needed **high** prediction accuracy with cross-validation.
+
+## 20 test cases
+
+Project assignment tells us to apply our model to the 20 test cases available in the test data... Let's do it:
+```{r testCases}
+table(predict(fit, testing), testing$problem_id)
+```
